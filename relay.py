@@ -41,6 +41,7 @@ APP_URIS = {
     "DisneyPlus": "com.sony.dtv.com.disney.disneyplus.com.bamtechmedia.dominguez.main.MainActivity",
     "PrimeVideo": "com.sony.dtv.com.amazon.amazonvideo.livingroom.com.amazon.ignition.IgnitionActivity",
     "SonyPicturesCore": "com.sony.dtv.com.sonypicturescore.com.sphe.bravialounge.SplashActivity",
+    "ARDMediathek": "com.sony.dtv.de.swr.avp.ard.tv.de.swr.avp.ard.tv.TvActivity",
 }
 
 KEY_MAP = {
@@ -68,6 +69,7 @@ KEY_MAP = {
     0x04EB: ("app", "DisneyPlus"),
     0x04EA: ("app", "PrimeVideo"),
     0x04F0: ("app", "SonyPicturesCore"),
+    0x04FB: ("app", "ARDMediathek"),
 }
 
 

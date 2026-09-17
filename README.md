@@ -53,5 +53,4 @@ The HID usage code → action mapping and the IRCC/app-URI tables live in `relay
 
 ## Known limitations
 
-- The remote's button backlight (if it has one) is tied to being paired with the TV specifically — pairing it here instead turns that off, and it could not be restored through the HID Output report or the HID Control Point "Exit Suspend" command. Reverse-engineering the actual trigger would need a BLE packet sniffer capturing genuine TV↔remote traffic.
 - Sony's IRCC/`appControl` endpoints do not handle concurrent requests well (they time out); the add-on serializes all TV-bound requests behind a lock. NAD requests are not affected.

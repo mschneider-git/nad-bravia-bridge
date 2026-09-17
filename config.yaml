@@ -1,0 +1,23 @@
+name: "NAD/Bravia Remote Bridge"
+version: "1.0.0"
+slug: "nadbridge"
+description: "Relays a Bluetooth-paired TV remote to a NAD amplifier (volume/mute) and a Sony Bravia TV (everything else) over the network"
+arch:
+  - aarch64
+  - amd64
+init: false
+host_dbus: true
+startup: services
+boot: auto
+options:
+  remote_mac: "AA:BB:CC:DD:EE:FF"
+  nad_host: "192.168.1.50"
+  nad_port: 30001
+  tv_host: "192.168.1.51"
+  tv_psk: "0000"
+schema:
+  remote_mac: "str"
+  nad_host: "str"
+  nad_port: "int"
+  tv_host: "str"
+  tv_psk: "str"

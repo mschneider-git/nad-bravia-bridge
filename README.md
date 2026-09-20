@@ -54,3 +54,7 @@ The HID usage code → action mapping and the IRCC/app-URI tables live in `relay
 ## Known limitations
 
 - Sony's IRCC/`appControl` endpoints do not handle concurrent requests well (they time out); the add-on serializes all TV-bound requests behind a lock. NAD requests are not affected.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

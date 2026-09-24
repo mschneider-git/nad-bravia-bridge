@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, Notify};
 use tokio::time::{sleep, timeout, Instant};
 use zbus::zvariant::OwnedValue;
 use zbus::{Connection, MatchRule, Message, MessageStream};
@@ -117,8 +117,12 @@ struct Ctx {
     conn: Connection,
     nad: Mutex<NadLink>,
     tv: Mutex<Option<TcpStream>>,
+    // True while subscribed to the remote's key notifications.
     connected: AtomicBool,
     reconnecting: AtomicBool,
+    // Wakes the reconnect loop early when BlueZ reports the remote (or
+    // itself) back, instead of waiting for the next retry.
+    wake: Notify,
 }
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -523,15 +527,19 @@ async fn bluez_call(ctx: &Ctx, path: &str, iface: &str, method: &str) -> Result<
     Ok(())
 }
 
-async fn connect_and_subscribe(ctx: &Ctx) -> Result<(), zbus::Error> {
+const RETRY_INTERVAL: Duration = Duration::from_secs(10);
+
+async fn connect_and_subscribe(ctx: &Ctx) -> Result<(), String> {
     // Connect fails if the remote is already connected; StartNotify below is
     // what decides whether we are subscribed.
-    if let Err(e) = bluez_call(ctx, &ctx.dev_path, "org.bluez.Device1", "Connect").await {
-        log(&format!("Connect: {e}"));
-    }
+    let connect_err = bluez_call(ctx, &ctx.dev_path, "org.bluez.Device1", "Connect").await.err();
     match bluez_call(ctx, &ctx.char_path, "org.bluez.GattCharacteristic1", "StartNotify").await {
+        Ok(()) => Ok(()),
         Err(zbus::Error::MethodError(name, _, _)) if name.as_str() == "org.bluez.Error.InProgress" => Ok(()),
-        r => r,
+        Err(e) => Err(match connect_err {
+            Some(c) => format!("{e} (Connect: {c})"),
+            None => e.to_string(),
+        }),
     }
 }
 
@@ -541,17 +549,37 @@ fn spawn_reconnect(ctx: &Arc<Ctx>) {
     }
     let ctx = ctx.clone();
     tokio::spawn(async move {
+        log("Connecting to remote...");
+        let mut failures = 0u32;
+        let mut last_err = String::new();
         loop {
-            log("Connecting to remote...");
             match connect_and_subscribe(&ctx).await {
                 Ok(()) => {
                     ctx.connected.store(true, Ordering::SeqCst);
-                    log("Connected and subscribed.");
+                    if failures == 0 {
+                        log("Connected and subscribed.");
+                    } else {
+                        log(&format!("Connected and subscribed after {} attempts.", failures + 1));
+                    }
                     break;
                 }
                 Err(e) => {
-                    log(&format!("Subscribe failed, retrying in 10s: {e}"));
-                    sleep(Duration::from_secs(10)).await;
+                    // A sleeping remote fails the same way every 10s: log the
+                    // first failure and changes, not every retry.
+                    if failures == 0 {
+                        log(&format!(
+                            "Remote not available, retrying every {}s and when BlueZ reports it: {e}",
+                            RETRY_INTERVAL.as_secs()
+                        ));
+                    } else if e != last_err {
+                        log(&format!("Still not available: {e}"));
+                    }
+                    failures += 1;
+                    last_err = e;
+                    tokio::select! {
+                        _ = sleep(RETRY_INTERVAL) => {}
+                        _ = ctx.wake.notified() => {}
+                    }
                 }
             }
         }
@@ -573,6 +601,34 @@ impl KeyState {
 
 type Changed = (String, HashMap<String, OwnedValue>, Vec<String>);
 
+// The remote (or BlueZ) is back: subscribe right away rather than at the next retry.
+fn subscribe_now(ctx: &Arc<Ctx>) {
+    if !ctx.connected.load(Ordering::SeqCst) {
+        ctx.wake.notify_one();
+        spawn_reconnect(ctx);
+    }
+}
+
+fn subscription_lost(ctx: &Arc<Ctx>, keys: &mut KeyState) {
+    ctx.connected.store(false, Ordering::SeqCst);
+    keys.stop_hold();
+    keys.last_code = None;
+    spawn_reconnect(ctx);
+}
+
+// BlueZ restarting drops every subscription, and a crash sends no
+// Connected=false first.
+fn handle_bluez_owner(ctx: &Arc<Ctx>, keys: &mut KeyState, msg: &Message) {
+    let Ok((_, _, new_owner)) = msg.body().deserialize::<(String, String, String)>() else { return };
+    if new_owner.is_empty() {
+        log("BlueZ stopped");
+        subscription_lost(ctx, keys);
+    } else {
+        log("BlueZ started");
+        subscribe_now(ctx);
+    }
+}
+
 fn handle_signal(ctx: &Arc<Ctx>, keys: &mut KeyState, msg: &Message) {
     let header = msg.header();
     let Some(path) = header.path() else { return };
@@ -581,12 +637,16 @@ fn handle_signal(ctx: &Arc<Ctx>, keys: &mut KeyState, msg: &Message) {
     if path.as_str() == ctx.dev_path && iface == "org.bluez.Device1" {
         if let Some(connected) = changed.remove("Connected").and_then(|v| bool::try_from(v).ok()) {
             log(&format!("Device Connected={connected}"));
-            ctx.connected.store(connected, Ordering::SeqCst);
-            if !connected {
-                keys.stop_hold();
-                keys.last_code = None;
-                spawn_reconnect(ctx);
+            if connected {
+                subscribe_now(ctx);
+            } else {
+                subscription_lost(ctx, keys);
             }
+        }
+        // The key characteristic only exists once services are resolved,
+        // which can come a moment after Connected=true.
+        if changed.remove("ServicesResolved").and_then(|v| bool::try_from(v).ok()) == Some(true) {
+            subscribe_now(ctx);
         }
     }
 
@@ -639,6 +699,14 @@ async fn run() -> Result<(), Error> {
         .path_namespace(dev_path.clone())?
         .build();
     let mut stream = MessageStream::for_match_rule(rule, &conn, Some(64)).await?;
+    let owner_rule = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.DBus")?
+        .interface("org.freedesktop.DBus")?
+        .member("NameOwnerChanged")?
+        .arg(0, "org.bluez")?
+        .build();
+    let mut owner_stream = MessageStream::for_match_rule(owner_rule, &conn, Some(8)).await?;
 
     let ctx = Arc::new(Ctx {
         opts,
@@ -649,6 +717,7 @@ async fn run() -> Result<(), Error> {
         tv: Mutex::new(None),
         connected: AtomicBool::new(false),
         reconnecting: AtomicBool::new(false),
+        wake: Notify::new(),
     });
     let mut keys = KeyState { last_code: None, hold: None };
 
@@ -660,6 +729,11 @@ async fn run() -> Result<(), Error> {
         tokio::select! {
             msg = stream.next() => match msg {
                 Some(Ok(msg)) => handle_signal(&ctx, &mut keys, &msg),
+                Some(Err(e)) => log(&format!("D-Bus error: {e}")),
+                None => return Err("D-Bus connection closed".into()),
+            },
+            msg = owner_stream.next() => match msg {
+                Some(Ok(msg)) => handle_bluez_owner(&ctx, &mut keys, &msg),
                 Some(Err(e)) => log(&format!("D-Bus error: {e}")),
                 None => return Err("D-Bus connection closed".into()),
             },

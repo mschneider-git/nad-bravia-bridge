@@ -25,7 +25,8 @@ jobs:
 
       - name: Read add-on version
         id: version
-        run: echo "version=$(sed -n 's/^version: *"\(.*\)"/\1/p' config.yaml)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "version=$(sed -n 's/^version: *"\(.*\)"/\1/p' config.yaml)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 

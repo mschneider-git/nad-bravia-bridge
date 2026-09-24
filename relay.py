@@ -81,6 +81,8 @@ REPEATABLE = {
     ("ircc", "Down"),
     ("ircc", "Left"),
     ("ircc", "Right"),
+    ("ircc", "ChannelUp"),
+    ("ircc", "ChannelDown"),
 }
 HOLD_DELAY = 0.4
 HOLD_INTERVAL = 0.15

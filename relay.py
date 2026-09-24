@@ -72,6 +72,23 @@ KEY_MAP = {
     0x04FB: ("app", "ARDMediathek"),
 }
 
+# Keys that auto-repeat while held down: the first press is sent immediately,
+# then after HOLD_DELAY the action repeats every HOLD_INTERVAL until release.
+REPEATABLE = {
+    ("nad", "volume_up"),
+    ("nad", "volume_down"),
+    ("ircc", "Up"),
+    ("ircc", "Down"),
+    ("ircc", "Left"),
+    ("ircc", "Right"),
+    ("ircc", "ChannelUp"),
+    ("ircc", "ChannelDown"),
+}
+HOLD_DELAY = 0.4
+HOLD_INTERVAL = 0.15
+# Safety net in case the release notification is lost.
+HOLD_MAX = 30
+
 
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -79,13 +96,15 @@ def log(msg):
 
 async def nad_send(cmd):
     reader, writer = await asyncio.open_connection(NAD_HOST, NAD_PORT)
-    writer.write(cmd.encode("utf-8"))
-    await writer.drain()
     try:
-        data = await asyncio.wait_for(reader.read(256), timeout=1.5)
-    except asyncio.TimeoutError:
-        data = b""
-    writer.close()
+        writer.write(cmd.encode("utf-8"))
+        await writer.drain()
+        try:
+            data = await asyncio.wait_for(reader.read(256), timeout=1.5)
+        except asyncio.TimeoutError:
+            data = b""
+    finally:
+        writer.close()
     return data.decode("utf-8", "ignore")
 
 
@@ -136,7 +155,7 @@ async def handle_app(name):
 _tv_lock = asyncio.Lock()
 
 
-async def dispatch(target, action):
+async def dispatch(target, action, quiet=False):
     try:
         if target == "nad":
             await handle_nad(action)
@@ -146,9 +165,35 @@ async def dispatch(target, action):
         elif target == "app":
             async with _tv_lock:
                 await handle_app(action)
-        log(f"OK {target}/{action}")
+        if not quiet:
+            log(f"OK {target}/{action}")
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log(f"ERROR {target}/{action}: {e}")
+
+
+async def hold_repeat(target, action):
+    loop = asyncio.get_running_loop()
+    count = 0
+    try:
+        await asyncio.sleep(HOLD_DELAY)
+        deadline = loop.time() + HOLD_MAX
+        while loop.time() < deadline:
+            await dispatch(target, action, quiet=True)
+            count += 1
+            await asyncio.sleep(HOLD_INTERVAL)
+        log(f"Hold {target}/{action} stopped after {HOLD_MAX}s without release")
+    finally:
+        if count:
+            log(f"Hold {target}/{action} repeated {count}x")
+
+
+def stop_hold(state):
+    task = state.get("hold_task")
+    if task is not None:
+        task.cancel()
+        state["hold_task"] = None
 
 
 async def call(bus, path, iface, member, signature="", body=None, destination="org.bluez"):
@@ -173,21 +218,27 @@ def make_handler(loop, state):
             log(f"Device Connected={connected}")
             state["connected"] = connected
             if not connected:
+                stop_hold(state)
+                state["last_code"] = None
                 loop.create_task(reconnect_loop(state["bus"], state))
 
         if msg.path == CHAR_PATH and iface == "org.bluez.GattCharacteristic1" and "Value" in changed:
             value = bytes(changed["Value"].value)
             code = value[0] | (value[1] << 8)
             if code == 0:
+                stop_hold(state)
                 state["last_code"] = None
                 return
             if code == state.get("last_code"):
                 return
+            stop_hold(state)
             state["last_code"] = code
             log(f"RX code=0x{code:04x}")
             if code in KEY_MAP:
                 target, action = KEY_MAP[code]
                 loop.create_task(dispatch(target, action))
+                if (target, action) in REPEATABLE:
+                    state["hold_task"] = loop.create_task(hold_repeat(target, action))
             else:
                 log(f"Unknown code 0x{code:04x}, ignoring")
 
@@ -216,7 +267,8 @@ async def reconnect_loop(bus, state):
 async def main():
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     loop = asyncio.get_event_loop()
-    state = {"connected": False, "last_code": None, "bus": bus, "reconnecting": False}
+    state = {"connected": False, "last_code": None, "bus": bus, "reconnecting": False,
+             "hold_task": None}
     bus.add_message_handler(make_handler(loop, state))
 
     await call(bus, "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", "s",

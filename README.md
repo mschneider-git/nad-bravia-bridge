@@ -16,7 +16,8 @@ Cheap/legacy amplifiers like the NAD C338 have no HDMI-CEC. A TV's "external aud
 3. Each code is looked up in a small dispatch table and either:
    - sent straight to the NAD over its plain-text TCP protocol (`Main.Volume+`, `Main.Volume-`, `Main.Mute=On/Off`), or
    - sent to the TV as an IRCC command (`X_SendIRCC` SOAP call) or an app launch (`appControl.setActiveApp` with the app's URI), both authenticated with the TV's pre-shared key.
-4. Automatic reconnect: if the Bluetooth connection to the remote drops, the add-on retries in the background.
+4. Press-and-hold: volume up/down, the four arrow keys and channel up/down auto-repeat while held. The first press is sent immediately; after 0.4 s the command repeats every 0.15 s until the remote reports the button release. All other buttons fire once per press. The set of repeating keys and the timing (`REPEATABLE`, `HOLD_DELAY`, `HOLD_INTERVAL`) live in `relay.py`.
+5. Automatic reconnect: if the Bluetooth connection to the remote drops, the add-on retries in the background.
 
 Bravia/NAD-side details — installed app URIs, IRCC command codes, the remote's raw HID code table — are queried live from the TV itself (`getRemoteControllerInfo`, `getApplicationList`) rather than hardcoded from guesswork, so they should transfer to other Bravia models reasonably well; the exact HID codes are specific to the RMF-TX920U and would need re-capturing for a different remote model.
 

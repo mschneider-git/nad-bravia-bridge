@@ -8,4 +8,4 @@ export TV_PSK=$(bashio::config 'tv_psk')
 
 bashio::log.info "Starting NAD/Bravia remote bridge (remote ${REMOTE_MAC})"
 
-exec /opt/venv/bin/python3 /relay.py
+exec python3 /relay.py

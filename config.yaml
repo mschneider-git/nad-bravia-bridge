@@ -1,5 +1,5 @@
 name: "NAD/Bravia Remote Bridge"
-version: "1.1.0"
+version: "1.1.1"
 slug: "nadbridge"
 description: "Relays a Bluetooth-paired TV remote to a NAD amplifier (volume/mute) and a Sony Bravia TV (everything else) over the network"
 arch:

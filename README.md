@@ -64,6 +64,8 @@ The HID usage code → action mapping, including the IRCC codes and app URIs, li
 ## Known limitations
 
 - Sony's IRCC/`appControl` endpoints do not handle concurrent requests well (they time out); the add-on serializes all TV-bound requests behind a lock. NAD requests are not affected.
+- The NAD C338 handles several simultaneous connections fine, but its firmware does not free the slots of closed ones: after about a dozen connects/disconnects in a few minutes it stops accepting connections until it is power-cycled. The add-on therefore keeps a single persistent connection to the amplifier (with TCP keepalive), reconnects only after an error, and waits 5 s after a failed attempt. Each `NAD: connected` line in the log is one slot used; during normal use it should appear once per add-on start.
+- Requests to the TV reuse one HTTP keep-alive connection while it stays open.
 
 ## License
 
